@@ -1,0 +1,752 @@
+diff --git a/src/mirall/application.cpp b/src/mirall/application.cpp
+index 6b58133..b920372 100644
+--- a/src/mirall/application.cpp
++++ b/src/mirall/application.cpp
+@@ -162,6 +162,7 @@ Application::Application(int &argc, char **argv) :
+     setupActions();
+     setupSystemTray();
+     slotSetupProxy();
++    slotSetupClientSideSSLCert();
+ 
+     folderMan->setupFolders();
+ 
+@@ -535,6 +536,15 @@ void Application::slotSetupProxy()
+     FolderMan::instance()->slotScheduleAllFolders();
+ }
+ 
++void Application::slotSetupClientSideSSLCert()
++{
++	Mirall::MirallConfigFile cfg;
++	if(cfg.useClientSideSSLCert())
++	{
++		//BACKHERE
++	}
++}
++
+ void Application::slotRefreshQuotaDisplay( qint64 total, qint64 used )
+ {
+     if (total == 0) {
+diff --git a/src/mirall/application.h b/src/mirall/application.h
+index f05a433..b1a295b 100644
+--- a/src/mirall/application.h
++++ b/src/mirall/application.h
+@@ -99,6 +99,7 @@ protected slots:
+     void slotSSLFailed( QNetworkReply *reply, QList<QSslError> errors );
+     void slotStartUpdateDetector();
+     void slotSetupProxy();
++    void slotSetupCliendSideSSLCert();
+     void slotRefreshQuotaDisplay( qint64 total, qint64 used );
+     void slotUseMonoIconsChanged( bool );
+     void slotUpdateProgress(const QString&, const Progress::Info&);
+diff --git a/src/mirall/generalsettings.h b/src/mirall/generalsettings.h
+index f0c9ca6..1348f7e 100644
+--- a/src/mirall/generalsettings.h
++++ b/src/mirall/generalsettings.h
+@@ -33,6 +33,7 @@ public:
+ 
+ signals:
+     void proxySettingsChanged();
++    void clientSideSSLCertSettingsChanged();
+ 
+ private slots:
+     void saveMiscSettings();
+diff --git a/src/mirall/mirallaccessmanager.cpp b/src/mirall/mirallaccessmanager.cpp
+index 1e627bd..aeac3bd 100644
+--- a/src/mirall/mirallaccessmanager.cpp
++++ b/src/mirall/mirallaccessmanager.cpp
+@@ -27,6 +27,18 @@ QNetworkReply* MirallAccessManager::createRequest(QNetworkAccessManager::Operati
+ {
+     QNetworkRequest newRequest(request);
+ 
++    MirallConfigFile cfg;
++    if(cfg.useClientSideSSLCert())
++    {
++	QIODevice client_side_ssl_cert_file(cfg.clientSideSSLCertLocation());
++	if(!client_side_ssl_cert_file)
++	{
++	//BACKHERE
++	}
++	QSsslCertificate client_side_certificate(
++	QSslConfiguration ssl_config = newRequest.sslConfig();
++
++    }
+     newRequest.setRawHeader( QByteArray("User-Agent"), Utility::userAgentString());
+     return QNetworkAccessManager::createRequest (op, newRequest, outgoingData);
+ }
+diff --git a/src/mirall/mirallaccessmanager.h b/src/mirall/mirallaccessmanager.h
+index a8dcbab..2a8efda 100644
+--- a/src/mirall/mirallaccessmanager.h
++++ b/src/mirall/mirallaccessmanager.h
+@@ -15,6 +15,8 @@
+ #define MIRALL_ACCESS_MANAGER_H
+ 
+ #include <QNetworkAccessManager>
++#include <QSslConfiguration>
++#include "mirallconfigfile.h"
+ 
+ namespace Mirall
+ {
+diff --git a/src/mirall/mirallconfigfile.cpp b/src/mirall/mirallconfigfile.cpp
+index 6b18fcb..12353ce 100644
+--- a/src/mirall/mirallconfigfile.cpp
++++ b/src/mirall/mirallconfigfile.cpp
+@@ -49,6 +49,10 @@ static const char proxyUserC[] = "Proxy/user";
+ static const char proxyPassC[] = "Proxy/pass";
+ static const char proxyNeedsAuthC[] = "Proxy/needsAuth";
+ 
++static const char clientSideSSLCertUseC[] = "clientSideSSLCert/enabled";
++static const char clientSideSSLCertLocationC[] = "clientSideSSLCert/location";
++static const char clientSideSSLCertPasswordC[] = "clientSideSSLCert/pass";
++
+ static const char useUploadLimitC[]   = "BWLimit/useUploadLimit";
+ static const char useDownloadLimitC[] = "BWLimit/useDownloadLimit";
+ static const char uploadLimitC[]      = "BWLimit/uploadLimit";
+@@ -546,6 +550,28 @@ void MirallConfigFile::setProxyType(int proxyType,
+     settings.sync();
+ }
+ 
++void MirallConfigFile::setClientSideSSLCertSettings(
++		bool use_client_side_ssl_cert,
++		const QString& certificate_location,
++		const QString& certificate_password
++		)
++{
++	QSettings settings(configFile(),QSettings::IniFormat);
++	settings.setIniCodec("UTF-8");
++	
++	settings.setValue(QLatin1String(clientSideSSLCertUseC), use_client_side_ssl_cert ? QString("true") : QString("false"));
++	if(use_client_side_ssl_cert)
++	{
++		settings.setValue(QLatin1String(clientSideSSLCertLocationC),certificate_location);
++		settings.setValue(QLatin1String(clientSideSSLCertPasswordC),certificate_password.toUtf8().toBase64());
++	}else
++	{
++		settings.setValue(QLatin1String(clientSideSSLCertLocationC),QString(""));
++		settings.setValue(QLatin1String(clientSideSSLCertPasswordC),QString(""));
++	}
++	settings.sync();
++}
++
+ QVariant MirallConfigFile::getValue(const QString& param, const QString& group,
+                                     const QVariant& defaultValue) const
+ {
+@@ -565,6 +591,7 @@ void MirallConfigFile::setValue(const QString& key, const QVariant &value)
+     settings.setValue(key, value);
+ }
+ 
++//get proxy settings:
+ int MirallConfigFile::proxyType() const
+ {
+     return getValue(QLatin1String(proxyTypeC)).toInt();
+@@ -596,6 +623,26 @@ QString MirallConfigFile::proxyPassword() const
+     return QString::fromUtf8(QByteArray::fromBase64(pass));
+ }
+ 
++//Get client side ssl cert settings:
++
++bool MirallConfigFile::useClientSideSSLCert()
++{
++	return getValue(clientSideSSLCertUseC) == "true";
++}
++
++QString MirallConfigFile::clientSideSSLCertLocation()
++{
++	return getValue(clientSideSSLCertLocationC).toString();
++}
++
++QString MirallConfigFile::clientSideSSLCertPassword()
++{
++	QByteArray pass = getValue(clientSideSSLCertPasswordC).toByteArray();
++	return QString::fromUtf8(QByteArray::fromBase64(pass));
++}
++
++
++//Get bwl settings:
+ int MirallConfigFile::useUploadLimit() const
+ {
+     return getValue(useUploadLimitC, QString::null, 0).toInt();
+diff --git a/src/mirall/mirallconfigfile.h b/src/mirall/mirallconfigfile.h
+index 2259055..e96c9cb 100644
+--- a/src/mirall/mirallconfigfile.h
++++ b/src/mirall/mirallconfigfile.h
+@@ -96,6 +96,17 @@ public:
+     bool proxyNeedsAuth() const;
+     QString proxyUser() const;
+     QString proxyPassword() const;
++
++    //client side ssl certificate settings:
++    void setClientSideSSLCertSettings(
++		    bool use_client_side_ssl_cert,
++		    const QString& certificate_location = QString(""),
++		    const QString& certificate_password = QString("")
++		    );
++    bool useClientSideSSLCert();//Return whether or not we use a client side SSL cert.
++    QString clientSideSSLCertLocation();
++    QString clientSideSSLCertPassword();
++
+     
+     /** 0: no limit, 1: manual, >0: automatic */
+     int useUploadLimit() const;
+diff --git a/src/mirall/networksettings.cpp b/src/mirall/networksettings.cpp
+index df1456b..6261041 100644
+--- a/src/mirall/networksettings.cpp
++++ b/src/mirall/networksettings.cpp
+@@ -22,14 +22,17 @@
+ 
+ #include <QNetworkProxy>
+ 
++
+ namespace Mirall {
+ 
++
+ NetworkSettings::NetworkSettings(QWidget *parent) :
+     QWidget(parent),
+     _ui(new Ui::NetworkSettings)
+ {
+     _ui->setupUi(this);
+ 
++    //Setup proxy ui stuff:
+     _ui->hostLineEdit->setPlaceholderText(tr("Hostname of proxy server"));
+     _ui->userLineEdit->setPlaceholderText(tr("Username for proxy server"));
+     _ui->passwordLineEdit->setPlaceholderText(tr("Password for proxy server"));
+@@ -46,8 +49,16 @@ NetworkSettings::NetworkSettings(QWidget *parent) :
+     connect(_ui->authRequiredcheckBox, SIGNAL(toggled(bool)),
+             _ui->authWidgets, SLOT(setEnabled(bool)));
+ 
++    //Setup client-side SSL certificate ui stuff:
++    _ui->sslClientSideCertLineEdit->setPlaceholderText(tr("Location of client side SSL Certificate (in PKCS12 form)."));
++    _ui->sslClientSideCertPasswordLineEdit->setPlaceholderText(tr("Password for client side SSL Certificate (optional)"));
++    connect(_ui->useSSLClientSideCertRadioButton, SIGNAL(toggled(bool)), 
++		_ui->sslClientSideCertWidget, SLOT(setEnabled(bool)));
++
++    //Load any settings that we have.
+     loadProxySettings();
+     loadBWLimitSettings();
++    loadClientSideSSLCertSettings();
+ 
+     // proxy
+     connect(_ui->typeComboBox, SIGNAL(currentIndexChanged(int)), SLOT(saveProxySettings()));
+@@ -64,6 +75,13 @@ NetworkSettings::NetworkSettings(QWidget *parent) :
+     connect(_ui->noDownloadLimitRadioButton, SIGNAL(clicked()), SLOT(saveBWLimitSettings()));
+     connect(_ui->downloadSpinBox, SIGNAL(valueChanged(int)), SLOT(saveBWLimitSettings()));
+     connect(_ui->uploadSpinBox, SIGNAL(valueChanged(int)), SLOT(saveBWLimitSettings()));
++    //ssl
++    connect(_ui->dontUseSSLClientSideCertRadioButton, SIGNAL(clicked()), SLOT(saveClientSideSSLCertSettings()));
++    connect(_ui->useSSLClientSideCertRadioButton, SIGNAL(clicked()),SLOT(saveClientSideSSLCertSettings()));
++    connect(_ui->sslClientSideCertLineEdit, SIGNAL(valueChanged(int)),SLOT(saveClientSideSSLCertSettings()));
++    connect(_ui->sslClientSideCertPasswordLineEdit, SIGNAL(valueChanged(int)),SLOT(saveClientSideSSLCertSettings()));
++    connect(_ui->sslClientSideCertLocationPushButton, SIGNAL(clicked()),SLOT(on_sslClientSideCertLocationPushButton_click()));
++    _ui->sslClientSideCertPasswordLineEdit->setEchoMode(QLineEdit::Password);
+ }
+ 
+ NetworkSettings::~NetworkSettings()
+@@ -105,6 +123,16 @@ void NetworkSettings::loadProxySettings()
+     }
+ }
+ 
++void NetworkSettings::loadClientSideSSLCertSettings()
++{
++	MirallConfigFile cfgFile;
++	_ui->dontUseSSLClientSideCertRadioButton->setChecked(cfgFile.useClientSideSSLCert());
++	if(cfgFile.useClientSideSSLCert()){
++		_ui->sslClientSideCertLineEdit->setText(cfgFile.clientSideSSLCertLocation());
++		_ui->sslClientSideCertPasswordLineEdit->setText(cfgFile.clientSideSSLCertPassword());
++	}
++}
++
+ void NetworkSettings::loadBWLimitSettings()
+ {
+     MirallConfigFile cfgFile;
+@@ -141,6 +169,29 @@ void NetworkSettings::saveProxySettings()
+     emit proxySettingsChanged();
+ }
+ 
++void NetworkSettings::saveClientSideSSLCertSettings()
++{
++	MirallConfigFile cfgFile;
++	if(_ui->dontUseSSLClientSideCertRadioButton->isChecked())
++	{
++		cfgFile.setClientSideSSLCertSettings(false);
++	}else
++	{
++		cfgFile.setClientSideSSLCertSettings(
++				true,
++			       	_ui->sslClientSideCertLineEdit->text(),
++			       	_ui->sslClientSideCertPasswordLineEdit->text()
++				);
++	}
++	emit clientSideSSLCertSettingsChanged();
++}
++
++void NetworkSettings::on_sslClientSideCertLocationPushButton_click()
++{
++	QString location = QFileDialog::getOpenFileName(this,tr("Choose Client Side SSL Certificate"),"",tr("PKCS12 Certificates (*.p12)"));
++	_ui->sslClientSideCertLineEdit->setText(location);
++}
++
+ void NetworkSettings::saveBWLimitSettings()
+ {
+     MirallConfigFile cfgFile;
+diff --git a/src/mirall/networksettings.h b/src/mirall/networksettings.h
+index 9788ba5..4b1c632 100644
+--- a/src/mirall/networksettings.h
++++ b/src/mirall/networksettings.h
+@@ -15,6 +15,7 @@
+ #define MIRALL_NETWORKSETTINGS_H
+ 
+ #include <QWidget>
++#include <QFileDialog>
+ 
+ 
+ namespace Mirall {
+@@ -33,15 +34,20 @@ public:
+ 
+ signals:
+     void proxySettingsChanged();
++    void clientSideSSLCertSettingsChanged();
+ 
+ private slots:
+     void saveProxySettings();
+     void saveBWLimitSettings();
++    void saveClientSideSSLCertSettings();
++    void on_sslClientSideCertLocationPushButton_click();
+ 
+ private:
+     void loadProxySettings();
++    void loadClientSideSSLCertSettings();
+     void loadBWLimitSettings();
+ 
++
+     Ui::NetworkSettings *_ui;
+ };
+ 
+diff --git a/src/mirall/networksettings.ui b/src/mirall/networksettings.ui
+index a580ffb..887d631 100644
+--- a/src/mirall/networksettings.ui
++++ b/src/mirall/networksettings.ui
+@@ -6,15 +6,15 @@
+    <rect>
+     <x>0</x>
+     <y>0</y>
+-    <width>518</width>
+-    <height>384</height>
++    <width>570</width>
++    <height>492</height>
+    </rect>
+   </property>
+   <property name="windowTitle">
+    <string>Form</string>
+   </property>
+   <layout class="QGridLayout" name="gridLayout_3">
+-   <item row="0" column="0" colspan="2">
++   <item row="1" column="0" colspan="2">
+     <widget class="QGroupBox" name="proxyGroupBox">
+      <property name="enabled">
+       <bool>true</bool>
+@@ -104,7 +104,7 @@
+            <item>
+             <widget class="QSpinBox" name="portSpinBox">
+              <property name="enabled">
+-              <bool>true</bool>
++              <bool>false</bool>
+              </property>
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+@@ -147,7 +147,7 @@
+             <item>
+              <widget class="QLineEdit" name="userLineEdit">
+               <property name="enabled">
+-               <bool>true</bool>
++               <bool>false</bool>
+               </property>
+               <property name="text">
+                <string/>
+@@ -157,7 +157,7 @@
+             <item>
+              <widget class="QLineEdit" name="passwordLineEdit">
+               <property name="enabled">
+-               <bool>true</bool>
++               <bool>false</bool>
+               </property>
+               <property name="text">
+                <string/>
+@@ -176,36 +176,63 @@
+      </layout>
+     </widget>
+    </item>
+-   <item row="1" column="0">
+-    <widget class="QGroupBox" name="groupBox">
++   <item row="4" column="1">
++    <widget class="QGroupBox" name="groupBox_2">
+      <property name="title">
+-      <string>Download Bandwidth</string>
++      <string>Upload Bandwidth</string>
+      </property>
+-     <layout class="QGridLayout" name="gridLayout_2">
++     <layout class="QGridLayout" name="gridLayout_4">
++      <item row="0" column="0" colspan="2">
++       <widget class="QRadioButton" name="noUploadLimitRadioButton">
++        <property name="text">
++         <string>No limit</string>
++        </property>
++       </widget>
++      </item>
++      <item row="1" column="0" colspan="2">
++       <widget class="QRadioButton" name="autoUploadLimitRadioButton">
++        <property name="text">
++         <string>Limit automatically</string>
++        </property>
++        <property name="checked">
++         <bool>true</bool>
++        </property>
++       </widget>
++      </item>
+       <item row="2" column="0">
+-       <widget class="QRadioButton" name="downloadLimitRadioButton">
++       <widget class="QRadioButton" name="uploadLimitRadioButton">
+         <property name="text">
+          <string>Limit to</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+-       <layout class="QHBoxLayout" name="horizontalLayout_3">
++       <layout class="QHBoxLayout" name="horizontalLayout_4">
+         <item>
+-         <widget class="QSpinBox" name="downloadSpinBox">
++         <widget class="QToolButton" name="toolButton">
++          <property name="text">
++           <string>...</string>
++          </property>
++         </widget>
++        </item>
++        <item>
++         <widget class="QSpinBox" name="uploadSpinBox">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
++          <property name="minimum">
++           <number>1</number>
++          </property>
+           <property name="maximum">
+            <number>9999</number>
+           </property>
+           <property name="value">
+-           <number>80</number>
++           <number>10</number>
+           </property>
+          </widget>
+         </item>
+         <item>
+-         <widget class="QLabel" name="label_3">
++         <widget class="QLabel" name="label_4">
+           <property name="text">
+            <string>KBytes/s</string>
+           </property>
+@@ -213,101 +240,186 @@
+         </item>
+        </layout>
+       </item>
+-      <item row="3" column="0" colspan="2">
+-       <spacer name="verticalSpacer_2">
+-        <property name="orientation">
+-         <enum>Qt::Vertical</enum>
++     </layout>
++     <zorder>autoUploadLimitRadioButton</zorder>
++     <zorder>uploadLimitRadioButton</zorder>
++     <zorder>noUploadLimitRadioButton</zorder>
++    </widget>
++   </item>
++   <item row="2" column="0" colspan="2">
++    <widget class="QGroupBox" name="sslGroupBox">
++     <property name="title">
++      <string>SSL Settings</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_2">
++      <item>
++       <widget class="QRadioButton" name="dontUseSSLClientSideCertRadioButton">
++        <property name="enabled">
++         <bool>true</bool>
+         </property>
+-        <property name="sizeHint" stdset="0">
+-         <size>
+-          <width>147</width>
+-          <height>25</height>
+-         </size>
++        <property name="autoFillBackground">
++         <bool>false</bool>
+         </property>
+-       </spacer>
+-      </item>
+-      <item row="0" column="0" colspan="2">
+-       <widget class="QRadioButton" name="noDownloadLimitRadioButton">
+         <property name="text">
+-         <string>No limit</string>
++         <string> No client-side SSL Certificate</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+-      <item row="2" column="2">
+-       <spacer name="horizontalSpacer">
+-        <property name="orientation">
+-         <enum>Qt::Horizontal</enum>
++      <item>
++       <widget class="QRadioButton" name="useSSLClientSideCertRadioButton">
++        <property name="text">
++         <string>Use  the following client-side SSL Certificate:</string>
+         </property>
+-        <property name="sizeHint" stdset="0">
+-         <size>
+-          <width>40</width>
+-          <height>20</height>
+-         </size>
++       </widget>
++      </item>
++      <item>
++       <widget class="QWidget" name="sslClientSideCertWidget" native="true">
++        <property name="enabled">
++         <bool>false</bool>
+         </property>
+-       </spacer>
++        <layout class="QVBoxLayout" name="verticalLayout_3">
++         <item>
++          <widget class="QWidget" name="widget" native="true">
++           <layout class="QHBoxLayout" name="horizontalLayout_5">
++            <item>
++             <spacer name="horizontalSpacer_4">
++              <property name="orientation">
++               <enum>Qt::Horizontal</enum>
++              </property>
++              <property name="sizeHint" stdset="0">
++               <size>
++                <width>40</width>
++                <height>20</height>
++               </size>
++              </property>
++             </spacer>
++            </item>
++            <item>
++             <widget class="QLabel" name="label_2">
++              <property name="text">
++               <string>Location:</string>
++              </property>
++             </widget>
++            </item>
++            <item>
++             <widget class="QLineEdit" name="sslClientSideCertLineEdit">
++              <property name="enabled">
++               <bool>false</bool>
++              </property>
++             </widget>
++            </item>
++            <item>
++             <widget class="QPushButton" name="sslClientSideCertLocationPushButton">
++              <property name="text">
++               <string>Browse...</string>
++              </property>
++             </widget>
++            </item>
++            <item>
++             <spacer name="horizontalSpacer_3">
++              <property name="orientation">
++               <enum>Qt::Horizontal</enum>
++              </property>
++              <property name="sizeHint" stdset="0">
++               <size>
++                <width>40</width>
++                <height>20</height>
++               </size>
++              </property>
++             </spacer>
++            </item>
++           </layout>
++           <zorder>label_2</zorder>
++           <zorder>sslClientSideCertLineEdit</zorder>
++           <zorder>sslClientSideCertLocationPushButton</zorder>
++           <zorder>horizontalSpacer_3</zorder>
++           <zorder>horizontalSpacer_4</zorder>
++          </widget>
++         </item>
++         <item>
++          <widget class="QWidget" name="widget_2" native="true">
++           <layout class="QHBoxLayout" name="horizontalLayout_6">
++            <item>
++             <spacer name="horizontalSpacer_5">
++              <property name="orientation">
++               <enum>Qt::Horizontal</enum>
++              </property>
++              <property name="sizeHint" stdset="0">
++               <size>
++                <width>40</width>
++                <height>20</height>
++               </size>
++              </property>
++             </spacer>
++            </item>
++            <item>
++             <widget class="QLabel" name="label_5">
++              <property name="text">
++               <string>Password:</string>
++              </property>
++             </widget>
++            </item>
++            <item>
++             <widget class="QLineEdit" name="sslClientSideCertPasswordLineEdit"/>
++            </item>
++            <item>
++             <spacer name="horizontalSpacer_2">
++              <property name="orientation">
++               <enum>Qt::Horizontal</enum>
++              </property>
++              <property name="sizeType">
++               <enum>QSizePolicy::Expanding</enum>
++              </property>
++              <property name="sizeHint" stdset="0">
++               <size>
++                <width>40</width>
++                <height>20</height>
++               </size>
++              </property>
++             </spacer>
++            </item>
++           </layout>
++          </widget>
++         </item>
++        </layout>
++       </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+-   <item row="1" column="1">
+-    <widget class="QGroupBox" name="groupBox_2">
+-     <property name="sizePolicy">
+-      <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
+-       <horstretch>0</horstretch>
+-       <verstretch>0</verstretch>
+-      </sizepolicy>
+-     </property>
++   <item row="4" column="0">
++    <widget class="QGroupBox" name="groupBox">
+      <property name="title">
+-      <string>Upload Bandwidth</string>
++      <string>Download Bandwidth</string>
+      </property>
+-     <layout class="QGridLayout" name="gridLayout_4">
+-      <item row="0" column="0" colspan="2">
+-       <widget class="QRadioButton" name="noUploadLimitRadioButton">
+-        <property name="text">
+-         <string>No limit</string>
+-        </property>
+-       </widget>
+-      </item>
+-      <item row="1" column="0" colspan="2">
+-       <widget class="QRadioButton" name="autoUploadLimitRadioButton">
+-        <property name="text">
+-         <string>Limit automatically</string>
+-        </property>
+-        <property name="checked">
+-         <bool>true</bool>
+-        </property>
+-       </widget>
+-      </item>
++     <layout class="QGridLayout" name="gridLayout_2">
+       <item row="2" column="0">
+-       <widget class="QRadioButton" name="uploadLimitRadioButton">
++       <widget class="QRadioButton" name="downloadLimitRadioButton">
+         <property name="text">
+          <string>Limit to</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+-       <layout class="QHBoxLayout" name="horizontalLayout_4">
++       <layout class="QHBoxLayout" name="horizontalLayout_3">
+         <item>
+-         <widget class="QSpinBox" name="uploadSpinBox">
++         <widget class="QSpinBox" name="downloadSpinBox">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+-          <property name="minimum">
+-           <number>1</number>
+-          </property>
+           <property name="maximum">
+            <number>9999</number>
+           </property>
+           <property name="value">
+-           <number>10</number>
++           <number>80</number>
+           </property>
+          </widget>
+         </item>
+         <item>
+-         <widget class="QLabel" name="label_4">
++         <widget class="QLabel" name="label_3">
+           <property name="text">
+            <string>KBytes/s</string>
+           </property>
+@@ -315,25 +427,32 @@
+         </item>
+        </layout>
+       </item>
++      <item row="0" column="0" colspan="2">
++       <widget class="QRadioButton" name="noDownloadLimitRadioButton">
++        <property name="text">
++         <string>No limit</string>
++        </property>
++        <property name="checked">
++         <bool>true</bool>
++        </property>
++       </widget>
++      </item>
++      <item row="2" column="2">
++       <spacer name="horizontalSpacer">
++        <property name="orientation">
++         <enum>Qt::Horizontal</enum>
++        </property>
++        <property name="sizeHint" stdset="0">
++         <size>
++          <width>40</width>
++          <height>20</height>
++         </size>
++        </property>
++       </spacer>
++      </item>
+      </layout>
+-     <zorder>autoUploadLimitRadioButton</zorder>
+-     <zorder>uploadLimitRadioButton</zorder>
+-     <zorder>noUploadLimitRadioButton</zorder>
+     </widget>
+    </item>
+-   <item row="2" column="1">
+-    <spacer name="verticalSpacer">
+-     <property name="orientation">
+-      <enum>Qt::Vertical</enum>
+-     </property>
+-     <property name="sizeHint" stdset="0">
+-      <size>
+-       <width>20</width>
+-       <height>0</height>
+-      </size>
+-     </property>
+-    </spacer>
+-   </item>
+   </layout>
+  </widget>
+  <resources/>
+diff --git a/src/mirall/settingsdialog.cpp b/src/mirall/settingsdialog.cpp
+index bf5c5e0..a2dc3e6 100644
+--- a/src/mirall/settingsdialog.cpp
++++ b/src/mirall/settingsdialog.cpp
+@@ -66,6 +66,7 @@ SettingsDialog::SettingsDialog(Application *app, QWidget *parent) :
+     NetworkSettings *networkSettings = new NetworkSettings;
+     _ui->stack->addWidget(networkSettings);
+     connect(networkSettings, SIGNAL(proxySettingsChanged()), app, SLOT(slotSetupProxy()));
++    connect(networkSettings,SIGNAL(clientSideSSLCertSettingsChanged()), app, SLOT(slotSetupClientSideSSLCertSettings));
+ 
+     //connect(generalSettings, SIGNAL(resizeToSizeHint()), SLOT(resizeToSizeHint()));
+ 
